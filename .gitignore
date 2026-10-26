@@ -1,0 +1,6 @@
+.vendor/
+.uv-cache/
+.venv/
+__pycache__/
+*.pyc
+
