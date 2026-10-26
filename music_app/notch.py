@@ -23,16 +23,24 @@ class NotchView:
     OPEN = (516, 198)
     ANIMATION_MS = 200
 
-    def __init__(self, root: tk.Tk, on_command: Callable[[str], None], on_expanded: Callable[[bool], None]) -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        on_command: Callable[[str], None],
+        on_expanded: Callable[[bool], None],
+        on_quit: Callable[[], None] | None = None,
+    ) -> None:
         self.root = root
         self.on_command = on_command
         self.on_expanded = on_expanded
+        self.on_quit = on_quit
         self.state = MediaState(detail="Looking for music…")
         self.expanded = False
         self._target_open = False
         self.size = self.CLOSED
         self._animation_id: str | None = None
         self._collapse_id: str | None = None
+        self._hover_tag: str | None = None
         self._last_clock = ""
         self._title_font = tkfont.Font(family="Segoe UI", size=13, weight="bold")
         self._artist_font = tkfont.Font(family="Segoe UI", size=9)
@@ -143,8 +151,16 @@ class NotchView:
         now = datetime.now().strftime("%a %d %b %Y  %H:%M")
         c.create_text(186, 25, text=now, anchor="w", fill=WHITE, font=("Segoe UI", 10))
         # Simple sound bars echo the small visualizer in the reference.
-        for x, height in ((469, 10), (475, 17), (481, 12), (487, 7)):
+        for x, height in ((432, 10), (438, 17), (444, 12), (450, 7)):
             c.create_line(x, 28 - height // 2, x, 28 + height // 2, fill=WHITE, width=2)
+
+        # Dedicated Quit button in header
+        is_quit_hover = self._hover_tag == "quit"
+        quit_bg = "#3a181e" if is_quit_hover else "#181a20"
+        quit_fg = "#ff6262" if is_quit_hover else "#8c8e96"
+        quit_border = "#ff6262" if is_quit_hover else "#292c34"
+        c.create_oval(474, 15, 498, 39, fill=quit_bg, outline=quit_border, width=1, tags=("quit",))
+        c.create_text(486, 27, text="✕", fill=quit_fg, font=("Segoe UI", 10, "bold"), tags=("quit",))
 
         title = self._fit(self.state.title if self.state.available else "Nothing playing", self._title_font, 310)
         artist = self._fit(
@@ -194,6 +210,10 @@ class NotchView:
             self.expand()
 
     def _leave(self, _event: tk.Event) -> None:
+        if self._hover_tag is not None:
+            self._hover_tag = None
+            if self.expanded:
+                self._draw()
         if self.expanded:
             self._schedule_collapse(1_100)
 
@@ -202,6 +222,10 @@ class NotchView:
             self.expand()
             return
         tags = self.canvas.gettags("current")
+        if "quit" in tags:
+            if self.on_quit:
+                self.on_quit()
+            return
         for action in ("previous", "toggle", "next"):
             if action in tags and self.state.available:
                 self.on_command(action)
@@ -210,7 +234,20 @@ class NotchView:
 
     def _motion(self, _event: tk.Event) -> None:
         tags = self.canvas.gettags("current")
-        interactive = not self.expanded or (self.state.available and any(tag in tags for tag in ("previous", "toggle", "next")))
+        new_hover = None
+        for tag in ("previous", "toggle", "next", "quit"):
+            if tag in tags:
+                new_hover = tag
+                break
+        if new_hover != self._hover_tag:
+            self._hover_tag = new_hover
+            if self.expanded:
+                self._draw()
+        interactive = (
+            not self.expanded
+            or new_hover == "quit"
+            or (self.state.available and new_hover in ("previous", "toggle", "next"))
+        )
         self.canvas.configure(cursor="hand2" if interactive else "arrow")
 
     def _cancel_collapse(self) -> None:

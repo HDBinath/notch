@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import queue
+import signal
 import sys
 import threading
 from dataclasses import asdict
@@ -30,7 +32,7 @@ class MediaWorker:
 
     def stop(self) -> None:
         self.stop_event.set()
-        self.thread.join(timeout=3)
+        self.thread.join(timeout=1.0)
 
     def command(self, action: str) -> None:
         if action in {"previous", "toggle", "next"}:
@@ -47,7 +49,10 @@ class MediaWorker:
             self.updates.put_nowait(state)
 
     def _run(self) -> None:
-        asyncio.run(self._loop())
+        try:
+            asyncio.run(self._loop())
+        except Exception:
+            pass
 
     async def _loop(self) -> None:
         try:
@@ -88,11 +93,52 @@ def run_ui(show_on_start: bool) -> None:
 
     from .notch import NotchView
 
+    # Ensure pystray's win32 loop runs in a daemon thread so it cannot block process termination
+    try:
+        import pystray._win32
+
+        def _daemon_run_detached(self_tray, setup=None):
+            self_tray._start_setup(setup)
+            t = threading.Thread(target=self_tray._run, name="pystray-detached", daemon=True)
+            t.start()
+
+        pystray._win32.Icon.run_detached = _daemon_run_detached
+    except (ImportError, AttributeError):
+        pass
+
     worker = MediaWorker()
     root = tk.Tk()
-    view = NotchView(root, worker.command, lambda expanded: (
-        worker.panel_visible.set() if expanded else worker.panel_visible.clear()
-    ))
+    _quitting = threading.Event()
+
+    def quit_app() -> None:
+        if _quitting.is_set():
+            return
+        _quitting.set()
+        try:
+            worker.stop()
+        except Exception:
+            pass
+        try:
+            tray.stop()
+        except Exception:
+            pass
+        try:
+            root.quit()
+        except Exception:
+            pass
+        try:
+            root.destroy()
+        except Exception:
+            pass
+
+    view = NotchView(
+        root,
+        worker.command,
+        lambda expanded: (
+            worker.panel_visible.set() if expanded else worker.panel_visible.clear()
+        ),
+        on_quit=quit_app,
+    )
 
     def icon_image() -> Image.Image:
         image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
@@ -110,12 +156,9 @@ def run_ui(show_on_start: bool) -> None:
         ),
     )
 
-    def quit_app() -> None:
-        worker.stop()
-        tray.stop()
-        root.destroy()
-
     def refresh() -> None:
+        if _quitting.is_set():
+            return
         try:
             while True:
                 event = ui_events.get_nowait()
@@ -134,7 +177,21 @@ def run_ui(show_on_start: bool) -> None:
                 tray.title = f"Notch Music — {state.title}" if state.available else "Notch Music"
         except queue.Empty:
             pass
-        root.after(750, refresh)
+        if not _quitting.is_set():
+            root.after(750, refresh)
+
+    # Periodic heartbeat giving Python interpreter opportunities to process OS signals (e.g. Ctrl+C)
+    def _signal_pump() -> None:
+        if not _quitting.is_set():
+            root.after(200, _signal_pump)
+
+    def handle_sigint(_signum, _frame) -> None:
+        quit_app()
+
+    try:
+        signal.signal(signal.SIGINT, handle_sigint)
+    except (ValueError, AttributeError):
+        pass
 
     root.protocol("WM_DELETE_WINDOW", view.collapse)
     worker.start()
@@ -142,7 +199,15 @@ def run_ui(show_on_start: bool) -> None:
     if show_on_start:
         view.expand()
     root.after(200, refresh)
-    root.mainloop()
+    root.after(200, _signal_pump)
+
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        quit_app()
+        os._exit(0)
 
 
 async def print_status() -> None:
@@ -158,10 +223,13 @@ def main() -> None:
     parser.add_argument("--status", action="store_true", help="Print one media-session snapshot and exit")
     parser.add_argument("--show", action="store_true", help="Open the controls immediately")
     args = parser.parse_args()
-    if args.status:
-        asyncio.run(print_status())
-    else:
-        run_ui(args.show)
+    try:
+        if args.status:
+            asyncio.run(print_status())
+        else:
+            run_ui(args.show)
+    except KeyboardInterrupt:
+        os._exit(0)
 
 
 if __name__ == "__main__":
