@@ -95,7 +95,7 @@ def run_ui(show_on_start: bool) -> None:
 
     # Ensure pystray's win32 loop runs in a daemon thread so it cannot block process termination
     try:
-        import pystray._win32
+        import pystray._win32  # type: ignore
 
         def _daemon_run_detached(self_tray, setup=None):
             self_tray._start_setup(setup)

@@ -1,0 +1,8 @@
+{
+  "python.analysis.extraPaths": [
+    "./.vendor"
+  ],
+  "python.autoComplete.extraPaths": [
+    "./.vendor"
+  ]
+}
