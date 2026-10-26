@@ -97,12 +97,12 @@ def run_ui(show_on_start: bool) -> None:
     try:
         import pystray._win32  # type: ignore
 
-        def _daemon_run_detached(self_tray, setup=None):
-            self_tray._start_setup(setup)
-            t = threading.Thread(target=self_tray._run, name="pystray-detached", daemon=True)
+        def _daemon_run_detached(self, setup=None):
+            self._start_setup(setup)
+            t = threading.Thread(target=self._run, name="pystray-detached", daemon=True)
             t.start()
 
-        pystray._win32.Icon.run_detached = _daemon_run_detached
+        setattr(pystray._win32.Icon, "run_detached", _daemon_run_detached)
     except (ImportError, AttributeError):
         pass
 
