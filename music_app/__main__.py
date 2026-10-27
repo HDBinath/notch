@@ -92,6 +92,7 @@ def run_ui(show_on_start: bool) -> None:
     from PIL import Image, ImageDraw
 
     from .notch import NotchView
+    from .power import battery_status
 
     # Ensure pystray's win32 loop runs in a daemon thread so it cannot block process termination
     try:
@@ -123,6 +124,10 @@ def run_ui(show_on_start: bool) -> None:
         except Exception:
             pass
         try:
+            view.close()
+        except Exception:
+            pass
+        try:
             root.quit()
         except Exception:
             pass
@@ -131,14 +136,21 @@ def run_ui(show_on_start: bool) -> None:
         except Exception:
             pass
 
-    view = NotchView(
-        root,
-        worker.command,
-        lambda expanded: (
-            worker.panel_visible.set() if expanded else worker.panel_visible.clear()
-        ),
-        on_quit=quit_app,
-    )
+    def stage_changed(stage: str) -> None:
+        if stage == NotchView.MINIMAL:
+            worker.panel_visible.clear()
+        else:
+            worker.panel_visible.set()
+            view.set_battery(battery_status())
+
+    view = NotchView(root, worker.command, stage_changed, on_quit=quit_app)
+
+    def battery_tick() -> None:
+        if _quitting.is_set():
+            return
+        if view.target_stage != NotchView.MINIMAL:
+            view.set_battery(battery_status())
+        root.after(30_000, battery_tick)
 
     def icon_image() -> Image.Image:
         image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
@@ -193,13 +205,14 @@ def run_ui(show_on_start: bool) -> None:
     except (ValueError, AttributeError):
         pass
 
-    root.protocol("WM_DELETE_WINDOW", view.collapse)
+    root.protocol("WM_DELETE_WINDOW", view.dismiss)
     worker.start()
     tray.run_detached()
     if show_on_start:
         view.expand()
     root.after(200, refresh)
     root.after(200, _signal_pump)
+    root.after(30_000, battery_tick)
 
     try:
         root.mainloop()
@@ -210,10 +223,18 @@ def run_ui(show_on_start: bool) -> None:
         os._exit(0)
 
 
+def status_payload(state: MediaState) -> dict:
+    payload = asdict(state)
+    payload["artwork_available"] = payload.pop("artwork_png") is not None
+    payload.pop("sampled_at")
+    return payload
+
+
 async def print_status() -> None:
     adapter = make_adapter()
     try:
-        print(json.dumps(asdict(await asyncio.wait_for(adapter.snapshot(), timeout=5)), ensure_ascii=False))
+        state = await asyncio.wait_for(adapter.snapshot(), timeout=5)
+        print(json.dumps(status_payload(state), ensure_ascii=False))
     finally:
         await adapter.close()
 

@@ -12,7 +12,7 @@ Reference: https://rama2555.github.io/nusa/ and https://github.com/rama2555/nusa
 
 ## First usable version
 
-1. The app starts in the system tray or menu bar; the user can quit from there. Its resting UI is a very small, plain black bump at the top center of the screen, with no eyes, labels, or other ornament. Hovering expands it downward into the curved panel; moving away collapses it again.
+1. The app starts in the system tray or menu bar; the user can quit from there. Its resting UI is a very small, plain black bump at the top center of the screen, with no eyes, labels, or other ornament. Hovering expands it into the full player. Moving away shrinks it to a half-open strip with a clock, playback indicator, and battery ring when available; after 60 seconds it returns to the minimal bump.
 2. The expanded overlay shows track title, artist, artwork when available, playback state, and play/pause, previous, next controls.
 3. A volume control shows the current output volume and can change it. Mute has a visible state.
 4. The overlay can be opened by clicking the tray icon or a configurable shortcut. Hover behavior is optional because it can conflict with top-edge controls.

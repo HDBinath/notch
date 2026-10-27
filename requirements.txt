@@ -4,4 +4,5 @@ dbus-next>=0.2.3,<1; sys_platform == "linux"
 winrt-runtime>=3.2.1,<5; sys_platform == "win32"
 winrt-Windows.Foundation>=3.2.1,<5; sys_platform == "win32"
 winrt-Windows.Media.Control>=3.2.1,<5; sys_platform == "win32"
+winrt-Windows.Storage.Streams>=3.2.1,<5; sys_platform == "win32"
 
