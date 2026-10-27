@@ -1,6 +1,6 @@
-# Notch Music prototype
+# Notch Music and To Do prototype
 
-A small background controller for music playing in another app. It does **not** play audio files itself. The prototype provides a tray icon and a top-center black notch with three stages: a minimal bump, a half-open strip with a live clock and playback indicator, and a full player. Hovering or opening from the tray shows the full player. After the pointer leaves, it shrinks to the half-open strip, then returns to the minimal bump after 60 seconds. The full player shows current track, artist, source, play/pause, previous, and next.
+A small background controller for music playing in another app, with a local To Do list. It does **not** play audio files itself. The prototype provides a tray icon and a top-center black notch with three stages: a minimal bump, a half-open strip with a live clock and playback indicator, and an expanded view with Music and To Do pages. Hovering or opening from the tray shows the expanded view. After the pointer leaves, it shrinks to the half-open strip, then returns to the minimal bump after 60 seconds. The music page shows current track, artist, source, play/pause, previous, and next.
 
 ## Run
 
@@ -12,7 +12,7 @@ python -m music_app --status
 python -m music_app
 ```
 
-`--status` prints one media-session snapshot and exits. `--show` opens the full panel immediately; otherwise it starts as the minimal notch. Hover over the minimal or half-open notch to expand it. Moving away or pressing Escape moves full → half-open; pressing Escape again moves half-open → minimal. The tray menu also has **Open music notch** and **Quit**. On Windows, `pythonw -m music_app` starts without a console after dependencies are installed.
+`--status` prints one media-session snapshot and exits. `--show` opens the full panel immediately; otherwise it starts as the minimal notch. Hover over the minimal or half-open notch to expand it. Use the arrow button or keyboard Left/Right keys to switch between Music and To Do. On To Do, click a task's circle to complete or reopen it, click a row to select it for editing, and scroll to see more than three tasks. Add and Edit open a compact editor below the notch. Tasks are saved locally and persist across days. Moving away or pressing Escape moves full → half-open; pressing Escape again moves half-open → minimal. The tray menu also has **Open music notch** and **Quit**. On Windows, `pythonw -m music_app` starts without a console after dependencies are installed.
 
 ## Platform support
 

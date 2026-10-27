@@ -10,12 +10,14 @@ import math
 from dataclasses import replace
 from datetime import datetime
 from tkinter import font as tkfont
+from tkinter import messagebox
 from typing import Callable
 
 from PIL import Image, ImageDraw, ImageTk
 
 from .media import MediaState
 from .power import BatteryStatus
+from .tasks import TaskStore
 
 
 TRANSPARENT = "#ff00ff"
@@ -23,6 +25,7 @@ BLACK = "#030408"
 MUTED = "#a8a9af"
 WHITE = "#f8f9fb"
 CYAN = "#88d8ff"
+GREEN = "#27d984"
 
 
 class NotchView:
@@ -42,12 +45,19 @@ class NotchView:
         on_command: Callable[[str], None],
         on_stage_change: Callable[[str], None],
         on_quit: Callable[[], None] | None = None,
+        task_store: TaskStore | None = None,
     ) -> None:
         self.root = root
         self.on_command = on_command
         self.on_stage_change = on_stage_change
         self.on_quit = on_quit
         self.state = MediaState(detail="Looking for music…")
+        self.tasks = task_store if task_store is not None else TaskStore()
+        self.page = "music"
+        self._task_scroll = 0
+        self._selected_task_id: str | None = None
+        self._task_editor: tk.Toplevel | None = None
+        self._icon_cache: dict[tuple[str, str, int], ImageTk.PhotoImage] = {}
         self.stage = self.MINIMAL
         self.target_stage = self.MINIMAL
         self.size = self.SIZES[self.MINIMAL]
@@ -72,6 +82,7 @@ class NotchView:
         self._progress_id: int | None = None
         self._title_font = tkfont.Font(family="Segoe UI", size=13, weight="bold")
         self._artist_font = tkfont.Font(family="Segoe UI", size=9)
+        self._task_font = tkfont.Font(family="Segoe UI", size=10)
 
         root.title("Notch Music")
         root.overrideredirect(True)
@@ -88,7 +99,12 @@ class NotchView:
         self.canvas.bind("<Leave>", self._leave)
         self.canvas.bind("<Button-1>", self._click)
         self.canvas.bind("<Motion>", self._motion)
+        self.canvas.bind("<MouseWheel>", self._wheel)
+        self.canvas.bind("<Button-4>", self._wheel)
+        self.canvas.bind("<Button-5>", self._wheel)
         root.bind("<Escape>", lambda _event: self.dismiss())
+        root.bind("<Left>", lambda _event: self._key_page("music"))
+        root.bind("<Right>", lambda _event: self._key_page("todo"))
         self._position(*self.size)
         self._draw()
         self._clock_id = root.after(15_000, self._clock_tick)
@@ -96,6 +112,9 @@ class NotchView:
 
     def close(self) -> None:
         self._closed = True
+        if self._task_editor is not None:
+            self._task_editor.destroy()
+            self._task_editor = None
         for timer in (self._animation_id, self._collapse_id, self._half_timeout_id,
                       self._clock_id, self._progress_tick_id, self._press_id, self._pending_id):
             if timer is not None:
@@ -153,11 +172,11 @@ class NotchView:
     def _progress_tick(self) -> None:
         if self._closed:
             return
-        if self.target_stage == self.FULL and self._progress_id is not None:
+        if self.target_stage == self.FULL and self.page == "music" and self._progress_id is not None:
             end = self._progress_end()
             if end is not None:
                 self.canvas.coords(self._progress_id, 120, 133, end, 133)
-        if self.target_stage in (self.HALF, self.FULL) and self.state.available and self.state.playing:
+        if (self.target_stage == self.HALF or self.target_stage == self.FULL and self.page == "music") and self.state.available and self.state.playing:
             self._sound_phase = (self._sound_phase + 1) % 4
             self._draw()
         self._progress_tick_id = self.root.after(250, self._progress_tick)
@@ -180,6 +199,9 @@ class NotchView:
         self._animate(self.MINIMAL)
 
     def dismiss(self) -> None:
+        if self._task_editor is not None:
+            self._close_task_editor()
+            return
         if self.target_stage == self.FULL:
             self.show_half()
         elif self.target_stage == self.HALF:
@@ -273,6 +295,9 @@ class NotchView:
         fade = max(0.0, min(1.0, (h - 65) / 115))
         if fade <= 0:
             return
+        if self.page == "todo":
+            self._draw_todo(c, fade)
+            return
         color = lambda value: self._fade(value, fade)
         self._draw_album(c, fade)
         if self.battery_percent is not None:
@@ -321,8 +346,7 @@ class NotchView:
             fg = CYAN if active or hovered else WHITE if can_control else "#62656c"
             c.create_text(x, 169 + (1 if active else 0), text=label, fill=color(fg),
                           font=("Segoe UI Symbol", font_size, "bold"), tags=(tag,))
-        for x in (245, 254, 263, 272):
-            c.create_oval(x, 187, x + 3, 190, fill=color("#5b5d64"), outline="")
+        self._draw_page_navigation(c, fade)
 
     def _draw_half(self, c: tk.Canvas, width: int, fade: float) -> None:
         color = lambda value: self._fade(value, fade)
@@ -366,6 +390,118 @@ class NotchView:
                           for px, py in points], fill=color(WHITE))
         return image.resize((size, size), Image.Resampling.LANCZOS)
 
+    def _icon(self, kind: str, color: str, size: int = 18) -> ImageTk.PhotoImage:
+        key = (kind, color, size)
+        if key in self._icon_cache:
+            return self._icon_cache[key]
+        scale = 6
+        image = Image.new("RGBA", (size * scale, size * scale), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        s = scale
+        if kind == "check":
+            draw.ellipse((s, s, (size - 1) * s, (size - 1) * s), fill=color)
+            draw.line([(5*s, 9*s), (8*s, 12*s), (13*s, 6*s)], fill=WHITE,
+                      width=round(2.2*s), joint="curve")
+        elif kind == "emptycheck":
+            draw.ellipse((s, s, (size - 1)*s, (size - 1)*s), outline=color, width=2*s)
+        elif kind == "plus":
+            draw.ellipse((s, s, (size - 1)*s, (size - 1)*s), fill=color)
+            draw.line((size*s/2, 5*s, size*s/2, (size-5)*s), fill=WHITE, width=2*s)
+            draw.line((5*s, size*s/2, (size-5)*s, size*s/2), fill=WHITE, width=2*s)
+        elif kind == "edit":
+            draw.line((4*s, 13*s, 12*s, 5*s), fill=color, width=2*s)
+            draw.line((10*s, 4*s, 14*s, 8*s), fill=color, width=2*s)
+            draw.line((3*s, 14*s, 7*s, 13*s), fill=color, width=2*s)
+        elif kind in ("left", "right"):
+            points = [(11, 5), (6, 9), (11, 13)] if kind == "left" else [(7, 5), (12, 9), (7, 13)]
+            draw.line([(x*s, y*s) for x, y in points], fill=color, width=round(2.2*s), joint="curve")
+        photo = ImageTk.PhotoImage(image.resize((size, size), Image.Resampling.LANCZOS), master=self.root)
+        self._icon_cache[key] = photo
+        return photo
+
+    def _draw_page_navigation(self, c: tk.Canvas, fade: float) -> None:
+        color = lambda value: self._fade(value, fade)
+        for page, x in (("music", 252), ("todo", 265)):
+            active = self.page == page
+            c.create_oval(x - (5 if active else 3), 184, x + (5 if active else 3),
+                          190 if not active else 191,
+                          fill=color(WHITE if active else "#62656c"), outline="")
+        x = 484 if self.page == "music" else 25
+        y = 168 if self.page == "music" else 99
+        c.create_oval(x - 14, y - 14, x + 14, y + 14, fill=color("#202329"), outline="")
+        c.create_image(x, y, image=self._icon("right" if self.page == "music" else "left", color(WHITE)),
+                       tags=("page_switch",))
+
+    def _task_row_background(self, completed: bool, selected: bool, fade: float) -> ImageTk.PhotoImage:
+        key = (f"row:{completed}:{selected}:{round(fade, 2)}", "", 0)
+        if key in self._icon_cache:
+            return self._icon_cache[key]
+        scale = 4
+        image = Image.new("RGBA", (216 * scale, 31 * scale), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        bg = self._fade("#10291d" if completed else "#1c2024", fade)
+        border = self._fade(GREEN if selected else "#2b3431" if completed else "#343940", fade)
+        draw.rounded_rectangle((0, 0, 216 * scale - 1, 31 * scale - 1), radius=9 * scale,
+                               fill=bg, outline=border, width=scale)
+        photo = ImageTk.PhotoImage(image.resize((216, 31), Image.Resampling.LANCZOS), master=self.root)
+        self._icon_cache[key] = photo
+        return photo
+
+    def _draw_todo(self, c: tk.Canvas, fade: float) -> None:
+        color = lambda value: self._fade(value, fade)
+        c.create_text(18, 25, text="To", anchor="w", fill=color(WHITE), font=("Segoe UI", 12, "bold"))
+        c.create_text(37, 25, text="Do", anchor="w", fill=color(GREEN), font=("Segoe UI", 12, "bold"))
+        if self.battery_percent is not None:
+            self._draw_battery(c, 177, 25, 9, fade)
+        c.create_text(194 if self.battery_percent is not None else 166, 25,
+                      text=datetime.now().strftime("%a %d %b %Y  %H:%M"), anchor="w",
+                      fill=color(WHITE), font=("Segoe UI", 10))
+        self._draw_sound_bars(c, (432, 438, 444, 450), 28, fade)
+        is_quit_hover = self._hover_tag == "quit"
+        c.create_oval(474, 15, 498, 39,
+                      fill=color("#3a181e" if is_quit_hover else "#181a20"),
+                      outline=color("#ff6262" if is_quit_hover else "#292c34"), width=1)
+        c.create_text(486, 27, text="✕", fill=color("#ff6262" if is_quit_hover else "#8c8e96"),
+                      font=("Segoe UI", 10, "bold"))
+
+        c.create_text(82, 74, text=f"{self.tasks.completed_count}/{len(self.tasks.tasks)}",
+                      fill=color(WHITE), font=("Segoe UI", 29, "bold"))
+        c.create_text(82, 105, text="Completed", fill=color(MUTED), font=("Segoe UI", 10))
+        for x0, x1, label, kind, active in (
+            (18, 120, "Add Task", "plus", True),
+            (128, 226, "Edit Task", "edit", self._selected_task_id is not None),
+        ):
+            c.create_oval(x0, 133, x0 + 31, 164, fill=color("#25282d" if active else "#15171a"), outline="")
+            c.create_rectangle(x0 + 15, 133, x1 - 15, 164, fill=color("#25282d" if active else "#15171a"), outline="")
+            c.create_oval(x1 - 31, 133, x1, 164, fill=color("#25282d" if active else "#15171a"), outline="")
+            if active:
+                c.create_image(x0 + 19, 148, image=self._icon(kind, color(GREEN if kind == "plus" else WHITE), 18))
+            c.create_text(x0 + 34, 148, text=label, anchor="w",
+                          fill=color(WHITE if active else "#73777d"), font=("Segoe UI", 9, "bold"))
+
+        visible = self.tasks.tasks[self._task_scroll:self._task_scroll + 3]
+        if not self.tasks.tasks:
+            c.create_text(346, 89, text="No tasks yet", fill=color(WHITE), font=("Segoe UI", 12, "bold"))
+            c.create_text(346, 111, text="Add one to get started", fill=color(MUTED), font=("Segoe UI", 9))
+        for index, task in enumerate(visible):
+            y0 = 48 + index * 36
+            selected = task.id == self._selected_task_id
+            c.create_image(238, y0, anchor="nw", image=self._task_row_background(task.completed, selected, fade))
+            c.create_image(254, y0 + 15, image=self._icon("check" if task.completed else "emptycheck",
+                                                            color(GREEN if task.completed else "#697078")))
+            fitted = self._fit(task.title, self._task_font, 164)
+            c.create_text(272, y0 + 15, text=fitted, anchor="w", fill=color("#aab5ad" if task.completed else WHITE),
+                          font=self._task_font)
+            if task.completed:
+                c.create_line(272, y0 + 15, 272 + self._task_font.measure(fitted), y0 + 15,
+                              fill=color("#aab5ad"), width=1)
+        if len(self.tasks.tasks) > 3:
+            c.create_line(463, 48, 463, 151, fill=color("#3b4045"), width=2)
+            thumb = 103 * 3 / len(self.tasks.tasks)
+            top = 48 + (103 - thumb) * self._task_scroll / (len(self.tasks.tasks) - 3)
+            c.create_line(463, top, 463, top + thumb, fill=color(GREEN), width=3)
+        self._draw_page_navigation(c, fade)
+
     def _draw_sound_bars(self, c: tk.Canvas, xs: tuple[int, ...], y: int, fade: float) -> None:
         if not self.state.available:
             return
@@ -406,7 +542,7 @@ class NotchView:
             self._hover_tag = None
             if self.target_stage == self.FULL:
                 self._draw()
-        if self.target_stage == self.FULL:
+        if self.target_stage == self.FULL and self._task_editor is None:
             self._schedule_collapse(240)
 
     def _control_at(self, x: int, y: int) -> str | None:
@@ -414,6 +550,21 @@ class NotchView:
             return None
         if (x - 486) ** 2 + (y - 27) ** 2 <= 14 ** 2:
             return "quit"
+        if self.page == "todo":
+            if (x - 25) ** 2 + (y - 99) ** 2 <= 16 ** 2:
+                return "page_music"
+            if 18 <= x <= 120 and 133 <= y <= 164:
+                return "task_add"
+            if 128 <= x <= 226 and 133 <= y <= 164 and self._selected_task_id is not None:
+                return "task_edit"
+            if 238 <= x <= 454 and 48 <= y < 151:
+                index = self._task_scroll + (y - 48) // 36
+                if index < len(self.tasks.tasks) and y < 48 + (index - self._task_scroll) * 36 + 31:
+                    task_id = self.tasks.tasks[index].id
+                    return f"task_toggle:{task_id}" if x < 270 else f"task_select:{task_id}"
+            return None
+        if (x - 484) ** 2 + (y - 168) ** 2 <= 16 ** 2:
+            return "page_todo"
         for tag, center, radius in (("previous", 216, 18), ("toggle", 258, 22), ("next", 300, 18)):
             if (x - center) ** 2 + (y - 168) ** 2 <= radius ** 2:
                 return tag
@@ -438,9 +589,35 @@ class NotchView:
             self.expand()
             return
         action = self._control_at(event.x, event.y)
+        self.canvas.focus_set()
         if action == "quit":
             if self.on_quit:
                 self.on_quit()
+            return
+        if action == "page_todo":
+            self._switch_page("todo")
+            return
+        if action == "page_music":
+            self._switch_page("music")
+            return
+        if action == "task_add":
+            self._open_task_editor()
+            return
+        if action == "task_edit":
+            self._open_task_editor(self._selected_task_id)
+            return
+        if action is not None and action.startswith("task_select:"):
+            self._selected_task_id = action.split(":", 1)[1]
+            self._draw()
+            return
+        if action is not None and action.startswith("task_toggle:"):
+            task_id = action.split(":", 1)[1]
+            try:
+                self.tasks.toggle(task_id)
+                self._selected_task_id = task_id
+                self._draw()
+            except OSError as exc:
+                messagebox.showerror("Unable to save task", str(exc), parent=self.root)
             return
         if action is not None and self.state.available:
             self._pressed_tag = action
@@ -465,9 +642,112 @@ class NotchView:
         interactive = (
             self.target_stage != self.FULL
             or new_hover == "quit"
+            or new_hover in ("page_todo", "page_music", "task_add", "task_edit")
+            or (new_hover is not None and new_hover.startswith("task_"))
             or (self.state.available and new_hover in ("previous", "toggle", "next"))
         )
         self.canvas.configure(cursor="hand2" if interactive else "arrow")
+
+    def _switch_page(self, page: str) -> None:
+        if self.target_stage != self.FULL or self._task_editor is not None or page == self.page:
+            return
+        self.page = page
+        self._hover_tag = None
+        self._draw()
+
+    def _key_page(self, page: str) -> None:
+        self._switch_page(page)
+
+    def _wheel(self, event: tk.Event) -> None:
+        if self.target_stage != self.FULL or self.page != "todo" or self._task_editor is not None:
+            return
+        direction = -1 if getattr(event, "num", None) == 4 or getattr(event, "delta", 0) > 0 else 1
+        if getattr(event, "num", None) not in (4, 5) and not getattr(event, "delta", 0):
+            return
+        limit = max(0, len(self.tasks.tasks) - 3)
+        new_scroll = min(limit, max(0, self._task_scroll + direction))
+        if new_scroll != self._task_scroll:
+            self._task_scroll = new_scroll
+            self._draw()
+
+    def _close_task_editor(self) -> None:
+        if self._task_editor is None:
+            return
+        editor = self._task_editor
+        self._task_editor = None
+        try:
+            editor.grab_release()
+        except tk.TclError:
+            pass
+        editor.destroy()
+        if not self._closed:
+            self.canvas.focus_set()
+            self._schedule_collapse(5_000)
+
+    def _open_task_editor(self, task_id: str | None = None) -> None:
+        if self._task_editor is not None:
+            return
+        task = next((item for item in self.tasks.tasks if item.id == task_id), None)
+        if task_id is not None and task is None:
+            return
+        self._cancel_collapse()
+        editor = tk.Toplevel(self.root)
+        self._task_editor = editor
+        editor.overrideredirect(True)
+        editor.attributes("-topmost", True)
+        editor.configure(bg="#32373b")
+        editor.geometry(f"310x126+{self.root.winfo_rootx() + 103}+{self.root.winfo_rooty() + self.size[1] + 8}")
+        panel = tk.Frame(editor, bg="#101318", padx=13, pady=10)
+        panel.pack(fill="both", expand=True, padx=1, pady=1)
+        tk.Label(panel, text="Edit Task" if task else "Add Task", bg="#101318", fg=WHITE,
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        title = tk.StringVar(value=task.title if task else "")
+        entry = tk.Entry(panel, textvariable=title, bg="#242930", fg=WHITE, insertbackground=WHITE,
+                         relief="flat", font=("Segoe UI", 10))
+        entry.pack(fill="x", pady=(7, 5), ipady=4)
+        error = tk.Label(panel, text="", bg="#101318", fg="#ff6973", font=("Segoe UI", 8))
+        error.pack(anchor="w")
+        buttons = tk.Frame(panel, bg="#101318")
+        buttons.pack(fill="x")
+
+        def save() -> None:
+            try:
+                if task is None:
+                    added = self.tasks.add(title.get())
+                    self._selected_task_id = added.id
+                    self._task_scroll = max(0, len(self.tasks.tasks) - 3)
+                else:
+                    self.tasks.edit(task.id, title.get())
+                self._close_task_editor()
+                self._draw()
+            except (OSError, ValueError) as exc:
+                error.configure(text=str(exc))
+
+        def delete() -> None:
+            if task is None or not messagebox.askyesno("Delete task", f"Delete ‘{task.title}’?", parent=editor):
+                return
+            try:
+                self.tasks.delete(task.id)
+                self._selected_task_id = None
+                self._task_scroll = min(self._task_scroll, max(0, len(self.tasks.tasks) - 3))
+                self._close_task_editor()
+                self._draw()
+            except OSError as exc:
+                error.configure(text=str(exc))
+
+        if task is not None:
+            tk.Button(buttons, text="Delete", command=delete, bg="#311c22", fg="#ff858d",
+                      relief="flat", font=("Segoe UI", 9)).pack(side="left")
+        tk.Button(buttons, text="Cancel", command=self._close_task_editor, bg="#252930", fg=WHITE,
+                  relief="flat", font=("Segoe UI", 9)).pack(side="right", padx=(6, 0))
+        tk.Button(buttons, text="Save", command=save, bg=GREEN, fg=BLACK,
+                  relief="flat", font=("Segoe UI", 9, "bold")).pack(side="right")
+        editor.bind("<Escape>", lambda _event: self._close_task_editor())
+        entry.bind("<Return>", lambda _event: save())
+        editor.protocol("WM_DELETE_WINDOW", self._close_task_editor)
+        editor.update_idletasks()
+        editor.grab_set()
+        entry.focus_set()
 
     def _cancel_collapse(self) -> None:
         if self._collapse_id is not None:
@@ -475,6 +755,8 @@ class NotchView:
             self._collapse_id = None
 
     def _schedule_collapse(self, delay_ms: int) -> None:
+        if self._task_editor is not None:
+            return
         self._cancel_collapse()
 
         def maybe_collapse() -> None:
@@ -482,7 +764,7 @@ class NotchView:
             x = self.root.winfo_pointerx() - self.root.winfo_rootx()
             y = self.root.winfo_pointery() - self.root.winfo_rooty()
             w, h = self.size
-            if self.target_stage == self.FULL and not (0 <= x < w and 0 <= y < h):
+            if self.target_stage == self.FULL and self._task_editor is None and not (0 <= x < w and 0 <= y < h):
                 self.show_half()
 
         self._collapse_id = self.root.after(delay_ms, maybe_collapse)

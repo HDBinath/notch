@@ -26,7 +26,7 @@ Reference: https://rama2555.github.io/nusa/ and https://github.com/rama2555/nusa
 
 The user chose recommendation-only behavior: the app never closes a process on its own. It explains the suspected issue and waits for the user to select an action.
 
-Brightness should be a separately enabled capability because external monitors and Linux desktop environments vary. Lyrics, tasks, water, and file shelf are later modules.
+Brightness should be a separately enabled capability because external monitors and Linux desktop environments vary. The prototype now includes a local To Do page; lyrics, water, and file shelf are later modules.
 
 ## Improvements over the reference
 
